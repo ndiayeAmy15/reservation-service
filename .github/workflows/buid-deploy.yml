@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4       # télécharge le code
+        uses: actions/checkout@v4
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -44,7 +44,7 @@ jobs:
           name: package-final
       - name: Show downloaded artifacts directory
         run: pwd && ls .
-      #Build docker image with Dockerfile and push to docker hub
+      #Build docker image with Dockerfile and push to docker hub hub
       - name: Build docker images
         run: docker build --no-cache -t ${{ secrets.DOCKER_HUB_USER }}/ms-reservation:latest .
       - name: show image
