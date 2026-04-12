@@ -46,6 +46,9 @@ jobs:
   # ==========================================
   # STAGE 2 : release (auto-versioning)
   # Equivalent à auto-version-job (manual sur main)
+  #Auto-versioning Se déclenche sur feat/fix commits
+  #Docker Hub push Après versioning
+  #Deploy staging Après Docker push
   # ==========================================
   release:
     name: Auto Version & Tag
