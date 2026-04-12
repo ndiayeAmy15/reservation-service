@@ -104,6 +104,9 @@ public class ReservationService implements IReservationService {
                     HttpStatus.BAD_REQUEST);
         }
 
+        //changer le status de la chambre
+        roomClientHttp.updateRoomAvailability(reservationSaved.getRoomId(), false);
+
         // 4. KAFKA ASYNC → payment-service
         iKafkaService.sendReservation(reservationMapper.toReservationKafka(reservationSaved));
 

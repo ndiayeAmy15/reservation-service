@@ -1,56 +1,271 @@
-name: CI/CD reservation-service
-on : [push]
+name: CI/CD achat-en-ligne-ms
+
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:  # Permet de lancer manuellement (équivalent "when: manual")
+
+env:
+  PROJECT_NAME: achat-en-ligne-ms
 
 jobs:
-  build:
-    name: Build job
+  # ==========================================
+  # STAGE 1 : build-test
+  # ==========================================
+  build-test:
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Nécessaire pour git describe (tags)
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
+
+      - name: Cache Maven
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+
       - name: Build with Maven
-        run: mvn -B package -DskipTests
-      - name: Create directory for Uploading artifacts
-        run: mkdir staging && cp target/*.jar staging
-      - name: Upload artifacts
+        run: mvn clean package -DskipTests
+
+      - name: Upload JAR artifact
         uses: actions/upload-artifact@v4
         with:
-          name: package-final
-          path: staging
-          if-no-files-found: error
+          name: ${{ env.PROJECT_NAME }}-jar
+          path: target/${{ env.PROJECT_NAME }}*.jar
           retention-days: 5
-      - name: Show Upload artifacts
-        run: ls staging/
-      - run: echo "This job's status is ${{ job.status }}."
 
-
-  deploy:
-    name: deploy job
-    needs: [ build ]
+  # ==========================================
+  # STAGE 2 : release (auto-versioning)
+  # Equivalent à auto-version-job (manual sur main)
+  # ==========================================
+  release:
+    name: Auto Version & Tag
+    needs: [build-test]
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    outputs:
+      new_tag: ${{ steps.versioning.outputs.new_tag }}
     steps:
-      # checkout project to get Dockerfile
       - name: Checkout code
         uses: actions/checkout@v4
-      #Get artifact from build JOB
-      - name: Download  artifact
+        with:
+          fetch-depth: 0
+
+      - name: Auto versioning (MAJOR.MINOR.PATCH)
+        id: versioning
+        run: |
+          # Récupère le dernier tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Last tag: $LAST_TAG"
+
+          VERSION=$(echo $LAST_TAG | sed 's/^v//')
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+          PATCH=$(echo $VERSION | cut -d. -f3)
+
+          COMMIT_MSG=$(git log -1 --pretty=%s)
+          echo "Commit message: $COMMIT_MSG"
+
+          if echo "$COMMIT_MSG" | grep -q "^feat"; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif echo "$COMMIT_MSG" | grep -q "^fix"; then
+            PATCH=$((PATCH + 1))
+          else
+            echo "No version bump required"
+            echo "new_tag=$LAST_TAG" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+          echo "New version: $NEW_TAG"
+
+          git config --global user.email "ton-email@example.com"
+          git config --global user.name "ton-username"
+          git tag $NEW_TAG
+          git push https://oauth2:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} $NEW_TAG
+
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo $NEW_TAG > version.txt
+
+      - name: Upload version file
+        uses: actions/upload-artifact@v4
+        with:
+          name: version
+          path: version.txt
+
+  # ==========================================
+  # STAGE 3 : package (staging)
+  # Equivalent à build-docker-image-job-staging
+  # ==========================================
+  package-staging:
+    name: Build & Push Docker Image (Staging)
+    needs: [release]
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    environment: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download JAR artifact
         uses: actions/download-artifact@v4
         with:
-          name: package-final
-      - name: Show downloaded artifacts directory
-        run: pwd && ls .
-      #Build docker image with Dockerfile and push to docker hub hub
-      - name: Build docker images
-        run: docker build --no-cache -t ${{ secrets.DOCKER_HUB_USER }}/ms-reservation:latest .
-      - name: show image
-        run: docker image ls
-      - name: Login to docker hub
+          name: ${{ env.PROJECT_NAME }}-jar
+          path: target/
+
+      - name: Download version file
+        uses: actions/download-artifact@v4
+        with:
+          name: version
+
+      - name: Read version
+        id: version
+        run: echo "VERSION=$(cat version.txt)" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ secrets.DOCKER_HUB_USER }}/${{ env.PROJECT_NAME }}:${{ steps.version.outputs.VERSION }} .
+
+      - name: Login to Docker Hub
         run: docker login -u ${{ secrets.DOCKER_HUB_USER }} -p ${{ secrets.DOCKER_HUB_TOKEN }}
-      - name: push image to docker hub
-        run: docker push ${{ secrets.DOCKER_HUB_USER }}/ms-reservation:latest
-      - run: echo "This job's status is ${{ job.status }}."
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ secrets.DOCKER_HUB_USER }}/${{ env.PROJECT_NAME }}:${{ steps.version.outputs.VERSION }}
+
+  # ==========================================
+  # STAGE 3 : package (production)
+  # Equivalent à build-docker-image-job-prod
+  # ==========================================
+  package-prod:
+    name: Build & Push Docker Image (Production)
+    needs: [release]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PROJECT_NAME }}-jar
+          path: target/
+
+      - name: Download version file
+        uses: actions/download-artifact@v4
+        with:
+          name: version
+
+      - name: Read version
+        id: version
+        run: echo "VERSION=$(cat version.txt)" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ secrets.DOCKER_HUB_USER }}/${{ env.PROJECT_NAME }}:${{ steps.version.outputs.VERSION }} .
+
+      - name: Login to Docker Hub
+        run: docker login -u ${{ secrets.DOCKER_HUB_USER }} -p ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Push to Docker Hub
+        run: |
+          docker push ${{ secrets.DOCKER_HUB_USER }}/${{ env.PROJECT_NAME }}:${{ steps.version.outputs.VERSION }}
+
+  # ==========================================
+  # STAGE 4 : deploy (staging)
+  # Equivalent à deploy-job-staging
+  # ==========================================
+  deploy-staging:
+    name: Deploy to Staging
+    needs: [package-staging]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop'
+    environment: staging
+    steps:
+      - name: Deploy via SSH to staging server
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.STAGING_SERVER_HOST }}
+          username: ${{ secrets.STAGING_SERVER_USER }}
+          key: ${{ secrets.STAGING_SERVER_SSH_KEY }}
+          script: |
+            docker compose down
+            docker compose pull
+            docker compose up -d
+
+
+
+
+
+
+#name: CI/CD reservation-service
+#on : [push]
+#
+#jobs:
+#  build:
+#    name: Build job
+#    runs-on: ubuntu-latest
+#    steps:
+#      - name: Checkout code
+#        uses: actions/checkout@v4
+#      - name: Set up JDK 17
+#        uses: actions/setup-java@v4
+#        with:
+#          java-version: '17'
+#          distribution: 'temurin'
+#      - name: Build with Maven
+#        run: mvn -B package -DskipTests
+#      - name: Create directory for Uploading artifacts
+#        run: mkdir staging && cp target/*.jar staging
+#      - name: Upload artifacts
+#        uses: actions/upload-artifact@v4
+#        with:
+#          name: package-final
+#          path: staging
+#          if-no-files-found: error
+#          retention-days: 5
+#      - name: Show Upload artifacts
+#        run: ls staging/
+#      - run: echo "This job's status is ${{ job.status }}."
+#
+#  deploy:
+#    name: deploy job
+#    needs: [ build ]
+#    runs-on: ubuntu-latest
+#    steps:
+#      # checkout project to get Dockerfile
+#      - name: Checkout code
+#        uses: actions/checkout@v4
+#      #Get artifact from build JOB
+#      - name: Download  artifact
+#        uses: actions/download-artifact@v4
+#        with:
+#          name: package-final
+#      - name: Show downloaded artifacts directory
+#        run: pwd && ls .
+#      #Build docker image with Dockerfile and push to docker hub hub
+#      - name: Build docker images
+#        run: docker build --no-cache -t ${{ secrets.DOCKER_HUB_USER }}/ms-reservation:latest .
+#      - name: show image
+#        run: docker image ls
+#      - name: Login to docker hub
+#        run: docker login -u ${{ secrets.DOCKER_HUB_USER }} -p ${{ secrets.DOCKER_HUB_TOKEN }}
+#      - name: push image to docker hub
+#        run: docker push ${{ secrets.DOCKER_HUB_USER }}/ms-reservation:latest
+#      - run: echo "This job's status is ${{ job.status }}."
+#

@@ -13,13 +13,13 @@ import java.time.LocalDate;
 @Getter
 public class ReservationKafka implements Serializable {
 
-    private static final long serialVersionUID = 1L;
-    private Long id;
-    private Long roomId;
-    private String clientName;
-    private String clientEmail;
-    private LocalDate checkIn;
-    private LocalDate checkOut;
-    private String status;
-    private Double totalPrice;
+        private static final long serialVersionUID = 1L;
+        private Long id;
+        private Long roomId;
+        private String clientName;
+        private String clientEmail;
+        private LocalDate checkIn;
+        private LocalDate checkOut;
+        private String status;
+        private Double totalPrice;
 }

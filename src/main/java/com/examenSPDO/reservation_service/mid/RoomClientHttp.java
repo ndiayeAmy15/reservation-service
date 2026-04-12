@@ -30,4 +30,20 @@ public class RoomClientHttp implements IRoomClientHttp{
         }
 
     }
+
+    @java.lang.Override
+    public void updateRoomAvailability(Long roomId, boolean available) {
+        log.info("Mise à jour disponibilité chambre id={} → {}", roomId, available);
+        try{
+            restTemplate.put(
+                    roomServiceUrl + "/rooms/" + roomId + "/availability?available=" + available,
+                    null
+            );
+        } catch (Exception e) {
+            log.error("Erreur mise à jour disponibilité : {}", e.getMessage());
+        }
+
+    }
+
+
 }
